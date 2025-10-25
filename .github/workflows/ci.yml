@@ -1,0 +1,155 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+      
+      chromadb:
+        image: chromadb/chroma:latest
+        options: >-
+          --health-cmd "curl -f http://localhost:8000/api/v1/heartbeat"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 8001:8000
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: Install Python dependencies
+      run: |
+        cd backend
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-xdist safety bandit
+    
+    - name: Install Node.js dependencies
+      run: |
+        cd frontend
+        npm ci
+    
+    - name: Set up test environment
+      run: |
+        cd backend
+        mkdir -p test-results
+        export ENVIRONMENT=test
+        export DATABASE_URL=postgresql://postgres:password@localhost:5432/test_db
+        export REDIS_URL=redis://localhost:6379/1
+        export CHROMA_URL=http://localhost:8001
+        export MISTRAL_API_KEY=test_key
+    
+    - name: Lint Python code
+      run: |
+        cd backend
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        black --check .
+        bandit -r . -f json -o test-results/security-scan.json
+    
+    - name: Run Unit Tests
+      run: |
+        cd backend
+        python -m pytest tests/test_schema_service.py -v --junitxml=test-results/unit-tests.xml --cov=api --cov-report=xml --cov-report=html
+    
+    - name: Run Integration Tests
+      run: |
+        cd backend
+        python -m pytest tests/test_integration.py -v --junitxml=test-results/integration-tests.xml
+    
+    - name: Run Performance Tests
+      run: |
+        cd backend
+        python -m pytest tests/test_performance.py -v --junitxml=test-results/performance-tests.xml -m "not slow"
+    
+    - name: Run Security Tests
+      run: |
+        cd backend
+        python -m pytest tests/test_security.py -v --junitxml=test-results/security-tests.xml
+    
+    - name: Run End-to-End Tests
+      run: |
+        cd backend
+        python -m pytest tests/test_integration.py::TestEndToEndWorkflows -v --junitxml=test-results/e2e-tests.xml
+    
+    - name: Build frontend
+      run: |
+        cd frontend
+        npm run build
+    
+    - name: Test frontend
+      run: |
+        cd frontend
+        npm test -- --coverage --watchAll=false --ci
+    
+    - name: Security scan
+      run: |
+        cd backend
+        pip install safety
+        safety check --json --output test-results/safety-report.json
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results
+        path: backend/test-results/
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Docker images
+      run: |
+        docker-compose build
+    
+    - name: Test Docker containers
+      run: |
+        docker-compose up -d
+        sleep 30
+        curl -f http://localhost:8000/health || exit 1
+        curl -f http://localhost:3000 || exit 1
