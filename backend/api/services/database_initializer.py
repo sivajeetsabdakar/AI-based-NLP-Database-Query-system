@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional
 from .database_manager import initialize_database_manager, get_database_manager
 from .chromadb_service import initialize_chromadb_service, get_chromadb_service
 from .redis_service import initialize_redis_service, get_redis_service
+from .database_utils import initialize_database_utils
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,11 @@ class DatabaseInitializer:
             self.logger.info("Initializing Redis service...")
             redis_service = initialize_redis_service(settings.REDIS_URL)
             self.services["redis"] = redis_service
+            
+            # Initialize Database Utils service
+            self.logger.info("Initializing Database Utils service...")
+            db_utils = initialize_database_utils()
+            self.services["database_utils"] = db_utils
             
             # Perform health checks
             self.logger.info("Performing health checks...")

@@ -26,6 +26,7 @@ from sentence_transformers import SentenceTransformer
 from .chromadb_service import get_chromadb_service
 from .database_manager import get_database_manager
 from .database_utils import get_database_utils
+from .mistral_client import get_mistral_client
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class DocumentProcessor:
         self.db_manager = None
         self.db_utils = None
         self.embedding_model = None
+        self.mistral_client = None
         
         # Document type patterns
         self.document_patterns = {
@@ -100,11 +102,23 @@ class DocumentProcessor:
             self.chromadb_service = get_chromadb_service()
             self.db_manager = get_database_manager()
             self.db_utils = get_database_utils()
+            self.mistral_client = get_mistral_client()
             
             # Initialize embedding model
             self.logger.info("Loading sentence-transformers model...")
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-            self.logger.info("Embedding model loaded successfully")
+            try:
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                self.logger.info("Embedding model loaded successfully")
+            except Exception as e:
+                self.logger.error(f"Failed to load embedding model: {str(e)}")
+                # Try alternative model
+                try:
+                    self.logger.info("Trying alternative embedding model...")
+                    self.embedding_model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+                    self.logger.info("Alternative embedding model loaded successfully")
+                except Exception as e2:
+                    self.logger.error(f"Failed to load alternative embedding model: {str(e2)}")
+                    raise e2
             
             self.logger.info("Document processor initialized successfully")
             
@@ -196,6 +210,55 @@ class DocumentProcessor:
             if not os.path.exists(file_path):
                 return {"success": False, "error": "File not found"}
             
+            # Ensure services are initialized - try lazy initialization
+            if not self.chromadb_service:
+                self.logger.warning("ChromaDB service not initialized, attempting lazy initialization...")
+                try:
+                    self.chromadb_service = get_chromadb_service()
+                except Exception as e:
+                    self.logger.error(f"Failed to initialize ChromaDB service: {str(e)}")
+                    return {"success": False, "error": "ChromaDB service not initialized"}
+            
+            if not self.db_manager:
+                self.logger.warning("Database manager not initialized, attempting lazy initialization...")
+                try:
+                    self.db_manager = get_database_manager()
+                except Exception as e:
+                    self.logger.error(f"Failed to initialize database manager: {str(e)}")
+                    return {"success": False, "error": "Database manager not initialized"}
+            
+            if not self.db_utils:
+                self.logger.warning("Database utils not initialized, attempting lazy initialization...")
+                try:
+                    self.db_utils = get_database_utils()
+                except Exception as e:
+                    self.logger.error(f"Failed to initialize database utils: {str(e)}")
+                    return {"success": False, "error": "Database utils not initialized"}
+            
+            if not self.mistral_client:
+                self.logger.warning("Mistral client not initialized, attempting lazy initialization...")
+                try:
+                    self.mistral_client = get_mistral_client()
+                except Exception as e:
+                    self.logger.warning(f"Failed to initialize Mistral client: {str(e)}")
+                    # Mistral client is optional, continue without it
+            
+            if not self.embedding_model:
+                self.logger.warning("Embedding model not initialized, attempting lazy initialization...")
+                try:
+                    self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                    self.logger.info("Embedding model loaded successfully (lazy initialization)")
+                except Exception as e:
+                    self.logger.error(f"Failed to load embedding model: {str(e)}")
+                    # Try alternative model
+                    try:
+                        self.logger.info("Trying alternative embedding model...")
+                        self.embedding_model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+                        self.logger.info("Alternative embedding model loaded successfully (lazy initialization)")
+                    except Exception as e2:
+                        self.logger.error(f"Failed to load alternative embedding model: {str(e2)}")
+                        return {"success": False, "error": "Embedding model not initialized"}
+            
             # Detect document type
             doc_type = self._detect_document_type(file_path)
             
@@ -210,8 +273,14 @@ class DocumentProcessor:
             # Generate intelligent chunks
             chunks = self._generate_intelligent_chunks(content, doc_type, structure)
             
+            if not chunks:
+                return {"success": False, "error": "Failed to generate document chunks"}
+            
             # Generate embeddings
             embeddings = self._generate_embeddings(chunks)
+            
+            if not embeddings:
+                return {"success": False, "error": "Failed to generate embeddings"}
             
             # Store in ChromaDB
             document_id = self._store_document_chunks(file_path, doc_type, chunks, embeddings, user_session_id)
@@ -327,28 +396,71 @@ class DocumentProcessor:
             return ""
     
     def _extract_pdf_content(self, file_path: str) -> str:
-        """Extract content from PDF file"""
+        """Extract content from PDF file using Mistral OCR"""
         try:
+            # First try Mistral OCR for better text extraction
+            if self.mistral_client:
+                try:
+                    self.logger.info(f"Using Mistral OCR for PDF extraction: {file_path}")
+                    ocr_result = self.mistral_client.extract_text_from_pdf_ocr(file_path)
+                    
+                    if ocr_result["success"] and ocr_result["text"]:
+                        self.logger.info(f"Mistral OCR extracted {len(ocr_result['text'])} characters from {ocr_result['pages_processed']} pages")
+                        return ocr_result["text"]
+                    else:
+                        self.logger.warning(f"Mistral OCR failed: {ocr_result.get('error', 'Unknown error')}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"Mistral OCR failed, falling back to traditional methods: {str(e)}")
+            else:
+                self.logger.warning("Mistral client not available, using traditional PDF extraction")
+            
+            # Fallback to traditional PDF extraction methods
             content = ""
             
             # Try pdfplumber first (better for complex layouts)
             try:
                 with pdfplumber.open(file_path) as pdf:
-                    for page in pdf.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            content += page_text + "\n"
+                    if not pdf.pages:
+                        self.logger.warning("PDF has no pages")
+                        return ""
+                    
+                    for i, page in enumerate(pdf.pages):
+                        try:
+                            page_text = page.extract_text()
+                            if page_text and page_text.strip():
+                                content += page_text + "\n"
+                        except Exception as e:
+                            self.logger.warning(f"Failed to extract text from page {i}: {str(e)}")
+                            continue
+                            
             except Exception as e:
                 self.logger.warning(f"pdfplumber failed, trying PyPDF2: {str(e)}")
                 
                 # Fallback to PyPDF2
-                with open(file_path, 'rb') as file:
-                    pdf_reader = PyPDF2.PdfReader(file)
-                    for page in pdf_reader.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            content += page_text + "\n"
+                try:
+                    with open(file_path, 'rb') as file:
+                        pdf_reader = PyPDF2.PdfReader(file)
+                        if not pdf_reader.pages:
+                            self.logger.warning("PDF has no pages (PyPDF2)")
+                            return ""
+                            
+                        for i, page in enumerate(pdf_reader.pages):
+                            try:
+                                page_text = page.extract_text()
+                                if page_text and page_text.strip():
+                                    content += page_text + "\n"
+                            except Exception as e:
+                                self.logger.warning(f"Failed to extract text from page {i} (PyPDF2): {str(e)}")
+                                continue
+                except Exception as e2:
+                    self.logger.error(f"Both PDF extraction methods failed: {str(e2)}")
+                    return ""
             
+            if not content.strip():
+                self.logger.warning("No content extracted from PDF")
+                return ""
+                
             return content.strip()
             
         except Exception as e:
@@ -701,10 +813,19 @@ class DocumentProcessor:
         """Generate embeddings for document chunks"""
         try:
             if not self.embedding_model:
+                self.logger.error("Embedding model not initialized")
                 raise ValueError("Embedding model not initialized")
             
+            if not chunks:
+                self.logger.warning("No chunks provided for embedding generation")
+                return []
+            
             # Extract text from chunks
-            texts = [chunk["text"] for chunk in chunks]
+            texts = [chunk["text"] for chunk in chunks if chunk.get("text")]
+            
+            if not texts:
+                self.logger.warning("No valid text chunks found for embedding generation")
+                return []
             
             # Generate embeddings in batches
             batch_size = 32
@@ -712,8 +833,9 @@ class DocumentProcessor:
             
             for i in range(0, len(texts), batch_size):
                 batch_texts = texts[i:i + batch_size]
-                batch_embeddings = self.embedding_model.encode(batch_texts)
-                embeddings.extend(batch_embeddings.tolist())
+                if batch_texts:  # Ensure batch is not empty
+                    batch_embeddings = self.embedding_model.encode(batch_texts)
+                    embeddings.extend(batch_embeddings.tolist())
             
             self.logger.info(f"Generated {len(embeddings)} embeddings")
             return embeddings
@@ -726,7 +848,20 @@ class DocumentProcessor:
         """Store document chunks in ChromaDB"""
         try:
             if not self.chromadb_service or not self.chromadb_service.client:
+                self.logger.error("ChromaDB service not initialized")
                 raise ValueError("ChromaDB service not initialized")
+            
+            if not chunks:
+                self.logger.warning("No chunks provided for storage")
+                raise ValueError("No chunks provided for storage")
+            
+            if not embeddings:
+                self.logger.warning("No embeddings provided for storage")
+                raise ValueError("No embeddings provided for storage")
+            
+            if len(chunks) != len(embeddings):
+                self.logger.error(f"Mismatch between chunks ({len(chunks)}) and embeddings ({len(embeddings)})")
+                raise ValueError(f"Mismatch between chunks ({len(chunks)}) and embeddings ({len(embeddings)})")
             
             # Generate document ID
             file_hash = hashlib.sha256(file_path.encode()).hexdigest()
@@ -736,11 +871,17 @@ class DocumentProcessor:
             collection_name = self._get_collection_name(doc_type)
             
             # Prepare documents, embeddings, and metadata
-            documents = [chunk["text"] for chunk in chunks]
+            documents = []
             metadatas = []
             ids = []
             
             for i, chunk in enumerate(chunks):
+                if not chunk.get("text"):
+                    self.logger.warning(f"Skipping empty chunk {i}")
+                    continue
+                    
+                documents.append(chunk["text"])
+                
                 metadata = {
                     "document_id": document_id,
                     "file_path": file_path,
@@ -749,8 +890,11 @@ class DocumentProcessor:
                     "chunk_type": chunk.get("chunk_type", "unknown"),
                     "section_type": chunk.get("section_type", "unknown"),
                     "created_at": chunk.get("created_at", datetime.utcnow().isoformat()),
-                    "user_session_id": user_session_id
+                    "user_session_id": user_session_id or "default"
                 }
+                
+                # Remove any None values from metadata
+                metadata = {k: v for k, v in metadata.items() if v is not None}
                 
                 # Add section-specific metadata
                 if "section_position" in chunk:
@@ -758,6 +902,17 @@ class DocumentProcessor:
                 
                 metadatas.append(metadata)
                 ids.append(f"{document_id}_chunk_{i}")
+            
+            if not documents:
+                self.logger.error("No valid documents to store")
+                raise ValueError("No valid documents to store")
+            
+            # Ensure embeddings match documents
+            if len(embeddings) > len(documents):
+                embeddings = embeddings[:len(documents)]
+            elif len(embeddings) < len(documents):
+                self.logger.error(f"Not enough embeddings for documents: {len(embeddings)} vs {len(documents)}")
+                raise ValueError(f"Not enough embeddings for documents: {len(embeddings)} vs {len(documents)}")
             
             # Store in ChromaDB
             collection = self.chromadb_service.client.get_or_create_collection(collection_name)
@@ -768,7 +923,7 @@ class DocumentProcessor:
                 ids=ids
             )
             
-            self.logger.info(f"Stored {len(chunks)} chunks in ChromaDB collection '{collection_name}'")
+            self.logger.info(f"Stored {len(documents)} chunks in ChromaDB collection '{collection_name}'")
             return document_id
             
         except Exception as e:
@@ -926,4 +1081,18 @@ def initialize_document_processor() -> DocumentProcessor:
     global document_processor
     document_processor = DocumentProcessor()
     document_processor.initialize()
+    return document_processor
+
+def get_or_initialize_document_processor() -> DocumentProcessor:
+    """Get or initialize the global document processor with lazy initialization"""
+    global document_processor
+    if document_processor is None:
+        logger.info("Document processor not initialized, creating new instance...")
+        document_processor = DocumentProcessor()
+        try:
+            document_processor.initialize()
+            logger.info("Document processor initialized successfully")
+        except Exception as e:
+            logger.warning(f"Document processor initialization failed: {str(e)}")
+            logger.info("Document processor will use lazy initialization")
     return document_processor

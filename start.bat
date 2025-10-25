@@ -1,6 +1,6 @@
 @echo off
-REM Simple Start Script for NLP Query Engine
-REM This script starts Docker services, backend, and frontend
+REM Backend Start Script for NLP Query Engine
+REM This script activates conda environment, installs requirements, and starts the backend
 
 setlocal enabledelayedexpansion
 
@@ -13,48 +13,52 @@ set NC=[0m
 
 echo.
 echo %CYAN%========================================%NC%
-echo %CYAN%  NLP Query Engine - Starting Services%NC%
+echo %CYAN%  NLP Query Engine - Backend Startup%NC%
 echo %CYAN%========================================%NC%
 echo.
 
-REM Check if Docker is running
-echo %CYAN%[1/5] Checking Docker...%NC%
-docker info >nul 2>&1
-if errorlevel 1 (
-    echo %RED%Error: Docker Desktop is not running!%NC%
-    echo %YELLOW%Please start Docker Desktop and try again.%NC%
+REM Check if we're in the right directory
+if not exist "backend\main.py" (
+    echo %RED%Error: backend\main.py not found!%NC%
+    echo %YELLOW%Please run this script from the project root directory.%NC%
     pause
     exit /b 1
 )
-echo %GREEN%Docker is running%NC%
 
-REM Start Docker services
-echo.
-echo %CYAN%[2/5] Starting Docker services...%NC%
-docker-compose up -d postgres redis chromadb
+REM Step 1: Activate conda environment
+echo %CYAN%[1/3] Activating conda environment 'ekam'...%NC%
+call conda activate ekam
 if errorlevel 1 (
-    echo %YELLOW%Warning: Some services may already be running%NC%
+    echo %YELLOW%Warning: Failed to activate conda environment 'ekam'%NC%
+    echo %YELLOW%Continuing with current environment...%NC%
 ) else (
-    echo %GREEN%Docker services started%NC%
+    echo %GREEN%Conda environment 'ekam' activated%NC%
 )
 
-REM Wait for services to be ready
+REM Step 2: Install requirements
 echo.
-echo %CYAN%[3/5] Waiting for services to be ready...%NC%
-timeout /t 10 /nobreak >nul
-echo %GREEN%Services ready%NC%
-
-REM Start Backend
-echo.
-echo %CYAN%[4/5] Starting Backend (FastAPI)...%NC%
+echo %CYAN%[2/3] Installing Python requirements...%NC%
 cd backend
+pip install -r requirements.txt
+if errorlevel 1 (
+    echo %RED%Error: Failed to install requirements!%NC%
+    echo %YELLOW%Please check the requirements.txt file and try again.%NC%
+    pause
+    exit /b 1
+) else (
+    echo %GREEN%Requirements installed successfully%NC%
+)
+
+REM Step 3: Start the backend
+echo.
+echo %CYAN%[3/4] Starting Backend (FastAPI)...%NC%
 start "NLP Backend" cmd /k "python main.py"
-cd ..
 echo %GREEN%Backend starting on http://localhost:8000%NC%
 
-REM Start Frontend
+REM Step 4: Start the frontend
 echo.
-echo %CYAN%[5/5] Starting Frontend (React)...%NC%
+echo %CYAN%[4/4] Starting Frontend (React)...%NC%
+cd ..
 cd frontend
 start "NLP Frontend" cmd /k "npm start"
 cd ..
@@ -72,11 +76,6 @@ echo   Backend API:   http://localhost:8000
 echo   API Docs:      http://localhost:8000/docs
 echo   Health Check:  http://localhost:8000/health
 echo.
-echo %CYAN%Docker Services:%NC%
-echo   PostgreSQL:    localhost:5432
-echo   Redis:         localhost:6379
-echo   ChromaDB:      localhost:8001
-echo.
 echo %YELLOW%Note: Frontend and Backend are running in separate windows%NC%
 echo %YELLOW%Close those windows to stop the services%NC%
 echo.
@@ -89,4 +88,3 @@ start http://localhost:3000
 echo.
 echo %GREEN%Done! Press any key to exit this window.%NC%
 pause >nul
-

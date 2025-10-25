@@ -408,6 +408,15 @@ class RedisService:
         except Exception as e:
             self.logger.error(f"Failed to get cache stats: {str(e)}")
             return {}
+    
+    # Alias methods for backward compatibility
+    def get(self, key: str, deserialize: bool = True) -> Optional[Any]:
+        """Alias for get_cache method"""
+        return self.get_cache(key, deserialize)
+    
+    def set(self, key: str, value: Any, ttl: Optional[int] = None, serialize: bool = True) -> bool:
+        """Alias for set_cache method"""
+        return self.set_cache(key, value, ttl, serialize)
 
 # Global Redis service instance
 redis_service: Optional[RedisService] = None

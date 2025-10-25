@@ -26,7 +26,7 @@ class DocumentSearchEngine:
         self.search_config = {
             "default_limit": 10,
             "max_limit": 100,
-            "similarity_threshold": 0.7,
+            "similarity_threshold": 0.3,  # Lowered threshold for better results
             "cache_ttl": 3600  # 1 hour
         }
         
@@ -470,7 +470,11 @@ class DocumentSearchEngine:
             
             cached_result = self.redis_service.get(cache_key)
             if cached_result:
-                return json.loads(cached_result)
+                # Handle both string and dict results
+                if isinstance(cached_result, str):
+                    return json.loads(cached_result)
+                elif isinstance(cached_result, dict):
+                    return cached_result
             
             return None
             
@@ -485,7 +489,7 @@ class DocumentSearchEngine:
                 return
             
             # Cache for configured TTL
-            self.redis_service.set(cache_key, json.dumps(result), expire=self.search_config["cache_ttl"])
+            self.redis_service.set(cache_key, json.dumps(result), ttl=self.search_config["cache_ttl"])
             
         except Exception as e:
             self.logger.error(f"Failed to cache search: {str(e)}")

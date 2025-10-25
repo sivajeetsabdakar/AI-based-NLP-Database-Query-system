@@ -18,7 +18,7 @@ from ..models.api_models import (
     BaseResponse, ErrorResponse
 )
 from ..services.database_initializer import get_database_initializer
-from ..services.document_processor import get_document_processor
+from ..services.document_processor import get_or_initialize_document_processor
 from ..services.schema_service import get_schema_service
 
 logger = logging.getLogger(__name__)
@@ -81,11 +81,12 @@ def get_database_initializer_dependency():
         raise HTTPException(status_code=503, detail="Database service not available")
 
 def get_document_processor_dependency():
-    """Dependency to get document processor"""
+    """Dependency to get document processor with lazy initialization"""
     try:
-        return get_document_processor()
-    except RuntimeError:
-        raise HTTPException(status_code=503, detail="Document processor not available")
+        return get_or_initialize_document_processor()
+    except Exception as e:
+        logger.error(f"Failed to get document processor: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Document processor not available: {str(e)}")
 
 def get_schema_service_dependency():
     """Dependency to get schema service"""
